@@ -1,0 +1,12 @@
+# Saved model checkpoints
+saved_models/
+
+# Python
+__pycache__/
+*.pyc
+
+# wandb
+wandb/
+
+# macOS
+.DS_Store

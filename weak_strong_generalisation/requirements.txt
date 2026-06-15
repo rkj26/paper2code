@@ -1,0 +1,14 @@
+# Weak-to-strong generalization reproduction — dependencies
+# Install with:  pip install -r requirements.txt
+#
+# A CUDA GPU is required to train the 7B student (the scripts default to
+# bfloat16 + device_map="auto"). On a fresh box, install the CUDA build of
+# torch first from https://pytorch.org if the default wheel isn't GPU-enabled.
+
+torch>=2.1
+transformers>=4.44
+datasets>=2.18
+accelerate>=0.30          # required by device_map="auto"
+safetensors>=0.4
+tqdm>=4.66
+wandb>=0.16              # optional: run with --no-wandb to skip, or set WANDB_API_KEY

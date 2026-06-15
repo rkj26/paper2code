@@ -1,0 +1,51 @@
+========================================
+FINAL EXPERIMENT RESULTS
+========================================
+Weak Teacher (1.5B):       15.62%
+Strong Student (7B + W2S): 40.62%
+Ceiling Model (7B + GT):   62.50%
+----------------------------------------
+Performance Gap Recovered (PGR): 53.33%
+========================================
+root@5badbc6b58d1:/workspace#
+
+Even with simple data - we see PGR is quite high meaning that it is very likely that the model has salient features which are already quite capable in answering the prompts.
+
+
+root@5badbc6b58d1:/workspace# python weak_to_strong_aux.py
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading and tokenizing dataset...
+Loading Qwen/Qwen2.5-1.5B...[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights: 100%|_____________________________| 338/338 [00:00<00:00, 600.88it/s]
+Training Weak Teacher:   0%|                                  | 0/125 [00:00<?, ?it/s][transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use
+_cache=False`.
+/usr/local/lib/python3.11/dist-packages/torch/utils/checkpoint.py:1399: FutureWarning: `torch.cpu.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cpu', a
+rgs...)` instead.
+  with device_autocast_ctx, torch.cpu.amp.autocast(**cpu_autocast_kwargs), recompute_context:  # type: ignore[attr-defined]
+Training Weak Teacher: 100%|___________| 125/125 [01:36<00:00,  1.30it/s, loss=0.2793]
+Eval Weak Teacher: 100%|____________________________| 103/103 [00:21<00:00,  4.78it/s]
+--> Clean Weak Teacher Accuracy: 80.18%
+
+[transformers] Model config: bos_token_id must be `None` or an integer within the vocabulary (between 0 and 1), got 151643. This may result in unexpected behavior.
+[transformers] Model config: eos_token_id must be `None` or an integer within the vocabulary (between 0 and 1), got 151643. This may result in unexpected behavior.
+Writing model shards: 100%|_____________________________| 1/1 [00:02<00:00,  2.85s/it]
+Generating weak soft-probabilities...Inference Pass: 100%|_______________________________| 125/125 [00:25<00:00,  4.91it/s]
+Loading Qwen/Qwen2.5-7B...
+Loading weights: 100%|_____________________________| 339/339 [00:01<00:00, 176.01it/s]
+
+Training 7B Student WITH Auxiliary Confidence Loss...
+Training Student (W2S + Aux): 100%|__| 1000/1000 [05:41<00:00,  2.93it/s, loss=0.8055]
+Eval Student: 100%|_________________________________| 103/103 [01:18<00:00,  1.32it/s]
+--> Weak-to-Strong Accuracy: 84.95%
+                                                                                                                                                                                dbWriting model shards: 100%|_____________________________| 1/1 [00:12<00:00, 12.97s/it]
+Loading Qwen/Qwen2.5-7B...
+Loading weights: 100%|______________________________| 339/339 [00:03<00:00, 93.11it/s]
+Training 7B Ceiling on GROUND TRUTH...
+Training Ceiling: 100%|______________| 1000/1000 [05:41<00:00,  2.92it/s, loss=0.0496]
+Eval Ceiling: 100%|_________________________________| 103/103 [01:18<00:00,  1.32it/s]
+--> Clean Ceiling Accuracy: 89.85%
+Writing model shards:   0%|                                     | 0/1 [00:10<?, ?it/s]                                                                                         uTraceback (most recent call last):
+  File "/workspace/weak_to_strong_aux.py", line 240, in <module>    model_ceiling.save_pretrained(f"{SAVE_DIR}/ceiling_model")
+  File "/usr/local/lib/python3.11/dist-packages/transformers/modeling_utils.py", line 3574, in save_pretrained    safe_save_file(shard_state_dict, filename, metadata=metadata)
+  File "/usr/local/lib/python3.11/dist-packages/safetensors/torch.py", line 323, in save_file    serialize_file(
+safetensors._safetensors_rust.S

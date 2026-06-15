@@ -9,6 +9,9 @@ from tqdm import tqdm
 import argparse
 import gc
 import os
+import random
+
+import numpy as np
 
 try:
     import wandb
@@ -34,13 +37,28 @@ MAX_GRAD_NORM = 1.0
 # Weights & Biases
 WANDB_PROJECT = "weak-to-strong-generalization"
 
+# Reproducibility
+SEED = 42
+
 SAVE_DIR = "./saved_models"
 os.makedirs(SAVE_DIR, exist_ok=True)
+
+
+def set_seed(seed=SEED):
+    """Seed all RNGs (Python, NumPy, torch CPU+CUDA) for reproducible runs.
+
+    Note: the data splits are fixed index slices and already deterministic; this
+    seeds the stochastic parts — classifier-head init and DataLoader shuffling.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 # ==========================================
 # Core Functions
 # ==========================================
-def prepare_data(tokenizer, is_sanity_check=False):
+def prepare_data(tokenizer, is_sanity_check=False, seed=SEED):
     print("Loading and tokenizing dataset...")
     dataset = load_dataset("google/boolq")
     
@@ -67,11 +85,12 @@ def prepare_data(tokenizer, is_sanity_check=False):
         ds_test = tokenized['validation']
         
     collator = DataCollatorWithPadding(tokenizer=tokenizer)
-    
-    dl_weak = DataLoader(ds_weak, batch_size=WEAK_BATCH_SIZE, shuffle=True, collate_fn=collator)
+
+    gen = torch.Generator().manual_seed(seed)   # reproducible shuffle order
+    dl_weak = DataLoader(ds_weak, batch_size=WEAK_BATCH_SIZE, shuffle=True, collate_fn=collator, generator=gen)
     dl_strong_inf = DataLoader(ds_strong, batch_size=WEAK_BATCH_SIZE, shuffle=False, collate_fn=collator)
     dl_test = DataLoader(ds_test, batch_size=WEAK_BATCH_SIZE, shuffle=False, collate_fn=collator)
-    
+
     return dl_weak, dl_strong_inf, dl_test, ds_strong, collator
 
 def load_classifier(model_id, tokenizer):
@@ -186,7 +205,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sanity-check", action="store_true", help="Run quickly on tiny data to test for bugs")
     parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases logging")
+    parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args()
+
+    set_seed(args.seed)
 
     use_wandb = setup_wandb(
         enabled=not args.no_wandb,
@@ -208,7 +230,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(WEAK_MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"   # last-token readout assumes right padding
-    dl_weak, dl_strong_inf, dl_test, ds_strong, collator = prepare_data(tokenizer, is_sanity_check=args.sanity_check)
+    dl_weak, dl_strong_inf, dl_test, ds_strong, collator = prepare_data(tokenizer, is_sanity_check=args.sanity_check, seed=args.seed)
 
     # 2. Phase 1: Weak Teacher
     model_weak = load_classifier(WEAK_MODEL_ID, tokenizer)
@@ -239,11 +261,13 @@ if __name__ == "__main__":
     
     ds_strong = ds_strong.add_column("soft_label", weak_soft_labels)
     ds_strong.set_format("torch", columns=["input_ids", "attention_mask", "label_int", "soft_label"])
-    dl_strong_train = DataLoader(ds_strong, batch_size=STRONG_BATCH_SIZE, shuffle=True, collate_fn=collator)
-    
+    gen_strong = torch.Generator().manual_seed(args.seed)
+    dl_strong_train = DataLoader(ds_strong, batch_size=STRONG_BATCH_SIZE, shuffle=True, collate_fn=collator, generator=gen_strong)
+
 
 
     # 4. Phase 3: Strong Student (Weak-to-Strong)
+    set_seed(args.seed)   # re-seed so the student head init is reproducible
     model_student = load_classifier(STRONG_MODEL_ID, tokenizer)
     train_model(model_student, dl_strong_train, desc="Training Student (W2S)", use_soft_labels=True, log_wandb=use_wandb)
     acc_w2s = evaluate(model_student, dl_test, desc="Eval Student")
@@ -257,6 +281,7 @@ if __name__ == "__main__":
     gc.collect()
 
     # 5. Phase 4: Max Capability Ceiling
+    set_seed(args.seed)   # re-seed so the ceiling head init is reproducible
     model_ceiling = load_classifier(STRONG_MODEL_ID, tokenizer)
     train_model(model_ceiling, dl_strong_train, desc="Training Ceiling", use_soft_labels=False, log_wandb=use_wandb)
     acc_ceil = evaluate(model_ceiling, dl_test, desc="Eval Ceiling")

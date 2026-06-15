@@ -9,6 +9,9 @@ from tqdm import tqdm
 import argparse
 import gc
 import os
+import random
+
+import numpy as np
 
 try:
     import wandb
@@ -43,12 +46,27 @@ WARMUP_FRAC = 0.2    # fraction of steps over which alpha ramps 0 -> ALPHA_MAX
 # Weights & Biases
 WANDB_PROJECT = "weak-to-strong-generalization"
 
+# Reproducibility
+SEED = 42
+
 os.makedirs(SAVE_DIR, exist_ok=True)
+
+
+def set_seed(seed=SEED):
+    """Seed all RNGs (Python, NumPy, torch CPU+CUDA) for reproducible runs.
+
+    The data splits are fixed index slices (already deterministic); this seeds
+    the stochastic parts — classifier-head init and DataLoader shuffling.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 # ==========================================
 # Data Processing Pipeline
 # ==========================================
-def prepare_data(tokenizer, is_sanity_check=False):
+def prepare_data(tokenizer, is_sanity_check=False, seed=SEED):
     print("Loading and tokenizing dataset...")
     dataset = load_dataset("google/boolq")
     
@@ -76,11 +94,12 @@ def prepare_data(tokenizer, is_sanity_check=False):
         ds_test = tokenized['validation']
         
     collator = DataCollatorWithPadding(tokenizer=tokenizer)
-    
-    dl_weak = DataLoader(ds_weak, batch_size=WEAK_BATCH_SIZE, shuffle=True, collate_fn=collator)
+
+    gen = torch.Generator().manual_seed(seed)   # reproducible shuffle order
+    dl_weak = DataLoader(ds_weak, batch_size=WEAK_BATCH_SIZE, shuffle=True, collate_fn=collator, generator=gen)
     dl_strong_inf = DataLoader(ds_strong, batch_size=WEAK_BATCH_SIZE, shuffle=False, collate_fn=collator)
     dl_test = DataLoader(ds_test, batch_size=WEAK_BATCH_SIZE, shuffle=False, collate_fn=collator)
-    
+
     return dl_weak, dl_strong_inf, dl_test, ds_strong, collator
 
 # ==========================================
@@ -229,7 +248,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sanity-check", action="store_true")
     parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases logging")
+    parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args()
+
+    set_seed(args.seed)
 
     use_wandb = setup_wandb(
         enabled=not args.no_wandb,
@@ -245,6 +267,7 @@ if __name__ == "__main__":
             "max_grad_norm": MAX_GRAD_NORM,
             "alpha_max": ALPHA_MAX,
             "warmup_frac": WARMUP_FRAC,
+            "seed": args.seed,
             "sanity_check": args.sanity_check,
         },
     )
@@ -252,7 +275,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(WEAK_MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"   # last-token readout assumes right padding
-    dl_weak, dl_strong_inf, dl_test, ds_strong, collator = prepare_data(tokenizer, is_sanity_check=args.sanity_check)
+    dl_weak, dl_strong_inf, dl_test, ds_strong, collator = prepare_data(tokenizer, is_sanity_check=args.sanity_check, seed=args.seed)
 
     # ------------------------------------------
     # Phase 1: Train Weak Teacher (GT Only)
@@ -283,8 +306,9 @@ if __name__ == "__main__":
 
     ds_strong = ds_strong.add_column("soft_label", weak_soft_labels)
     ds_strong.set_format("torch", columns=["input_ids", "attention_mask", "label_int", "soft_label"])
-    dl_strong_train = DataLoader(ds_strong, batch_size=STRONG_BATCH_SIZE, shuffle=True, collate_fn=collator)
-    
+    gen_strong = torch.Generator().manual_seed(args.seed)
+    dl_strong_train = DataLoader(ds_strong, batch_size=STRONG_BATCH_SIZE, shuffle=True, collate_fn=collator, generator=gen_strong)
+
     # Explicitly tear down teacher to guarantee empty VRAM
     del model_weak
     torch.cuda.empty_cache()
@@ -293,6 +317,7 @@ if __name__ == "__main__":
     # ------------------------------------------
     # Phase 3: Strong Student (Weak Labels + Aux)
     # ------------------------------------------
+    set_seed(args.seed)   # re-seed so the student head init is reproducible
     model_student = load_classifier(STRONG_MODEL_ID, tokenizer)
     print("\nTraining 7B Student WITH Auxiliary Confidence Loss...")
     train_model(model_student, dl_strong_train, desc="Training Student (W2S + Aux)", use_soft_labels=True, is_student=True, log_wandb=use_wandb)
@@ -309,6 +334,7 @@ if __name__ == "__main__":
     # ------------------------------------------
     # Phase 4: Max Capability Ceiling (GT Only)
     # ------------------------------------------
+    set_seed(args.seed)   # re-seed so the ceiling head init is reproducible
     model_ceiling = load_classifier(STRONG_MODEL_ID, tokenizer)
     print("\nTraining 7B Ceiling on GROUND TRUTH...")
     train_model(model_ceiling, dl_strong_train, desc="Training Ceiling", use_soft_labels=False, is_student=False, log_wandb=use_wandb)

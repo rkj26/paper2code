@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorWithPadding
+from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorWithPadding, get_cosine_schedule_with_warmup
 from torch.optim import AdamW
 from tqdm import tqdm
 import argparse
@@ -152,7 +152,16 @@ def train_model(model, dataloader, desc, use_soft_labels=False, freeze_backbone=
         
     criterion = nn.CrossEntropyLoss()
 
-    num_steps = len(dataloader)
+    num_batches = len(dataloader)
+    total_training_steps = (num_batches + GRAD_ACCUM_STEPS - 1) // GRAD_ACCUM_STEPS
+    num_warmup_steps = int(0.1 * total_training_steps)
+
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=total_training_steps
+    )
+
     progress = tqdm(dataloader, desc=desc)
     optimizer.zero_grad()
 
@@ -173,14 +182,15 @@ def train_model(model, dataloader, desc, use_soft_labels=False, freeze_backbone=
         # Scale for gradient accumulation, then accumulate.
         (loss / GRAD_ACCUM_STEPS).backward()
 
-        if (step + 1) % GRAD_ACCUM_STEPS == 0 or (step + 1) == num_steps:
+        if (step + 1) % GRAD_ACCUM_STEPS == 0 or (step + 1) == num_batches:
             torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
 
         progress.set_postfix({'loss': f"{loss.item():.4f}"})
         if log_wandb:
-            wandb.log({f"{desc}/loss": loss.item()})
+            wandb.log({f"{desc}/loss": loss.item(), f"{desc}/lr": scheduler.get_last_lr()[0]})
 
 def evaluate(model, dataloader, desc):
     model.eval()
